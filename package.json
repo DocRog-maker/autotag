@@ -1,0 +1,16 @@
+{
+  "name": "autotag",
+  "version": "1.0.0",
+  "description": "Retag PDFs with Apryse and preserve Figure alt-text",
+  "license": "ISC",
+  "author": "",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --check index.js"
+  },
+  "dependencies": {
+    "@pdftron/pdfnet-node": "^11.6.0"
+  }
+}
