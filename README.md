@@ -35,6 +35,7 @@ Options:
 
 The report includes:
 
+- source and retagged tag locations (type, page, structure path, MCIDs, alt-text)
 - number of source figure tags with Alt-text
 - number of retagged figure tags found
 - number successfully reapplied
