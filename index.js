@@ -3,6 +3,13 @@ const path = require('path');
 const os = require('os');
 const { PDFNet } = require('@pdftron/pdfnet-node');
 
+const MIN_MATCH_OVERLAP_RATIO = 0.85;
+const MIN_IMAGE_RECT_AREA = 64;
+
+function isImageTagType(type) {
+  return type === 'Figure' || type === 'Image';
+}
+
 function parseArgs(argv) {
   const args = {
     input: null,
@@ -186,8 +193,8 @@ async function collectAltCandidateElements(doc, options) {
     const hasAlt = await elem.hasAlt();
     const altText = hasAlt ? await elem.getAlt() : '';
     const hasNonEmptyAltText = hasAlt && altText.trim().length > 0;
-    const isFigure = type === 'Figure';
-    const includeByFigureType = includeFigureWithoutAlt && isFigure;
+    const isImageTag = isImageTagType(type);
+    const includeByFigureType = includeFigureWithoutAlt && isImageTag;
     const includeByAltText = onlyWithAltText ? hasNonEmptyAltText : hasAlt;
 
     if (includeByFigureType || includeByAltText) {
@@ -235,17 +242,123 @@ function groupByPageInOrder(figures) {
   return grouped;
 }
 
+function normalizeRect(rect) {
+  if (!rect) {
+    return null;
+  }
+  const left = Math.min(rect.x1, rect.x2);
+  const right = Math.max(rect.x1, rect.x2);
+  const bottom = Math.min(rect.y1, rect.y2);
+  const top = Math.max(rect.y1, rect.y2);
+  return {
+    x1: left,
+    y1: bottom,
+    x2: right,
+    y2: top,
+  };
+}
+
+function rectArea(rect) {
+  const normalized = normalizeRect(rect);
+  if (!normalized) {
+    return 0;
+  }
+  const width = Math.max(0, normalized.x2 - normalized.x1);
+  const height = Math.max(0, normalized.y2 - normalized.y1);
+  return width * height;
+}
+
+function getRectSimilarityScore(rectA, rectB) {
+  const a = normalizeRect(rectA);
+  const b = normalizeRect(rectB);
+  if (!a || !b) {
+    return 0;
+  }
+
+  const overlapLeft = Math.max(a.x1, b.x1);
+  const overlapBottom = Math.max(a.y1, b.y1);
+  const overlapRight = Math.min(a.x2, b.x2);
+  const overlapTop = Math.min(a.y2, b.y2);
+  const overlapWidth = Math.max(0, overlapRight - overlapLeft);
+  const overlapHeight = Math.max(0, overlapTop - overlapBottom);
+  const overlapArea = overlapWidth * overlapHeight;
+  if (overlapArea <= 0) {
+    return 0;
+  }
+
+  const areaA = rectArea(a);
+  const areaB = rectArea(b);
+  if (areaA <= 0 || areaB <= 0) {
+    return 0;
+  }
+
+  return overlapArea / Math.max(areaA, areaB);
+}
+
 async function applyAltTextMappings(sourceFigures, retaggedFigures) {
   const sourceByPage = groupByPageInOrder(sourceFigures);
   const targetByPage = groupByPageInOrder(retaggedFigures);
   const unmatched = [];
   const applied = [];
+  const skippedArtifacts = [];
+
+  const usedTargetObjNums = new Set();
 
   for (const [pageKey, sourceList] of sourceByPage.entries()) {
     const targetList = targetByPage.get(pageKey) || [];
-    for (let i = 0; i < sourceList.length; i += 1) {
-      const sourceFigure = sourceList[i];
-      const targetFigure = targetList[i];
+    for (const sourceFigure of sourceList) {
+      const sourceArea = rectArea(sourceFigure.rect);
+      if (sourceArea > 0 && sourceArea < MIN_IMAGE_RECT_AREA) {
+        skippedArtifacts.push({
+          sourceType: sourceFigure.type,
+          sourcePath: sourceFigure.path,
+          sourceObjNum: sourceFigure.objNum,
+          pageIndex: sourceFigure.pageIndex,
+          pageNumber: sourceFigure.pageNumber,
+          sourceMcids: sourceFigure.mcids,
+          sourceRect: sourceFigure.rect,
+          altText: sourceFigure.altText,
+          reason: `Skipped as likely artifact: area ${sourceArea.toFixed(2)} < ${MIN_IMAGE_RECT_AREA}.`,
+        });
+        continue;
+      }
+
+      let targetFigure = null;
+      let matchMethod = 'none';
+      let overlapRatio = null;
+
+      const candidateTargets = targetList.filter(
+        (candidate) =>
+          !usedTargetObjNums.has(candidate.objNum) &&
+          (rectArea(candidate.rect) <= 0 || rectArea(candidate.rect) >= MIN_IMAGE_RECT_AREA)
+      );
+
+      if (sourceFigure.rect) {
+        let bestMatch = null;
+        let bestScore = 0;
+        for (const candidate of candidateTargets) {
+          if (!candidate.rect) {
+            continue;
+          }
+          const score = getRectSimilarityScore(sourceFigure.rect, candidate.rect);
+          if (score > bestScore) {
+            bestScore = score;
+            bestMatch = candidate;
+          }
+        }
+        if (bestMatch && bestScore >= MIN_MATCH_OVERLAP_RATIO) {
+          targetFigure = bestMatch;
+          matchMethod = 'rect-overlap';
+          overlapRatio = bestScore;
+        }
+      }
+
+      if (!targetFigure && !sourceFigure.rect) {
+        targetFigure = candidateTargets[0] || null;
+        if (targetFigure) {
+          matchMethod = 'order-fallback-no-source-rect';
+        }
+      }
 
       if (!targetFigure) {
         unmatched.push({
@@ -257,10 +370,17 @@ async function applyAltTextMappings(sourceFigures, retaggedFigures) {
           sourceMcids: sourceFigure.mcids,
           sourceRect: sourceFigure.rect,
           altText: sourceFigure.altText,
-          reason: 'No corresponding retagged Figure found on same page position.',
+          reason:
+            sourceFigure.rect
+              ? `No retagged Figure met location overlap threshold (${Math.round(
+                  MIN_MATCH_OVERLAP_RATIO * 100
+                )}%).`
+              : 'No corresponding retagged Figure available for fallback matching.',
         });
         continue;
       }
+
+      usedTargetObjNums.add(targetFigure.objNum);
 
       const targetObj = await targetFigure.element.getSDFObj();
       await targetObj.putText('Alt', sourceFigure.altText);
@@ -276,12 +396,14 @@ async function applyAltTextMappings(sourceFigures, retaggedFigures) {
         targetMcids: targetFigure.mcids,
         sourceRect: sourceFigure.rect,
         targetRect: targetFigure.rect,
+        matchMethod,
+        overlapRatio,
         altText: sourceFigure.altText,
       });
     }
   }
 
-  return { unmatched, applied };
+  return { unmatched, applied, skippedArtifacts };
 }
 
 function toTagLocationLogEntry(tag) {
@@ -350,7 +472,7 @@ async function run() {
       includeFigureWithoutAlt: true,
     });
     const sourceFiguresWithAlt = sourceAltCandidates.filter(
-      (tag) => tag.type === 'Figure' && tag.hasNonEmptyAltText
+      (tag) => isImageTagType(tag.type) && tag.hasNonEmptyAltText
     );
 
     logTagLocations('Original document tag locations (Figure or has Alt)', sourceAltCandidates);
@@ -364,11 +486,11 @@ async function run() {
       onlyWithAltText: false,
       includeFigureWithoutAlt: true,
     });
-    const retaggedFigureElements = retaggedAltCandidates.filter((tag) => tag.type === 'Figure');
+    const retaggedFigureElements = retaggedAltCandidates.filter((tag) => isImageTagType(tag.type));
 
     logTagLocations('Retagged document tag locations (Figure or has Alt)', retaggedAltCandidates);
 
-    const { unmatched, applied } = await applyAltTextMappings(
+    const { unmatched, applied, skippedArtifacts } = await applyAltTextMappings(
       sourceFiguresWithAlt,
       retaggedFigureElements
     );
@@ -387,7 +509,9 @@ async function run() {
       retaggedFigureCount: retaggedFigureElements.length,
       reappliedCount: applied.length,
       unmatchedCount: unmatched.length,
+      skippedArtifactCount: skippedArtifacts.length,
       reapplied: applied,
+      skippedArtifacts,
       unmatched,
     };
     await fs.writeFile(reportPath, JSON.stringify(report, null, 2), 'utf8');
@@ -396,6 +520,9 @@ async function run() {
     console.log(`Alt-text report written: ${reportPath}`);
     if (unmatched.length > 0) {
       console.log(`Unmatched alt-text entries: ${unmatched.length}`);
+    }
+    if (skippedArtifacts.length > 0) {
+      console.log(`Skipped likely artifact images: ${skippedArtifacts.length}`);
     }
   } finally {
     try {

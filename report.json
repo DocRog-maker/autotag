@@ -1,7 +1,7 @@
 {
   "input": "C:\\demo\\autotag\\PDF_UA_label_img.pdf",
   "output": "C:\\demo\\autotag\\output.pdf",
-  "generatedAt": "2026-08-02T20:46:30.744Z",
+  "generatedAt": "2026-08-02T20:51:44.831Z",
   "sourceTagLocationCount": 1,
   "retaggedTagLocationCount": 1,
   "sourceTagLocations": [
@@ -45,19 +45,23 @@
     }
   ],
   "sourceFigureAltTextCount": 1,
-  "retaggedFigureCount": 0,
-  "reappliedCount": 0,
-  "unmatchedCount": 1,
-  "reapplied": [],
-  "unmatched": [
+  "retaggedFigureCount": 1,
+  "reappliedCount": 1,
+  "unmatchedCount": 0,
+  "skippedArtifactCount": 0,
+  "reapplied": [
     {
-      "sourceType": "Figure",
-      "sourcePath": "0/4",
       "sourceObjNum": 27,
+      "sourcePath": "0/4",
+      "targetObjNum": 105,
+      "targetPath": "0/0/4",
       "pageIndex": 1,
       "pageNumber": 1,
       "sourceMcids": [
         27
+      ],
+      "targetMcids": [
+        22
       ],
       "sourceRect": {
         "x1": 329.95,
@@ -65,8 +69,17 @@
         "x2": 555.7800000000001,
         "y2": 603.56
       },
-      "altText": "Photograph of a person using a braille display and headphones while reading a computer screen showing a PDF/UA document with text about accessibility standards for PDF files. Screen text includes headings, page number, and explanation of PDF/UA as an ISO standard enabling people with disabilities to access and understand PDF content.",
-      "reason": "No corresponding retagged Figure found on same page position."
+      "targetRect": {
+        "x1": 329.95,
+        "y1": 453.46,
+        "x2": 555.7700000000001,
+        "y2": 603.56
+      },
+      "matchMethod": "rect-overlap",
+      "overlapRatio": 0.9999557189036001,
+      "altText": "Photograph of a person using a braille display and headphones while reading a computer screen showing a PDF/UA document with text about accessibility standards for PDF files. Screen text includes headings, page number, and explanation of PDF/UA as an ISO standard enabling people with disabilities to access and understand PDF content."
     }
-  ]
+  ],
+  "skippedArtifacts": [],
+  "unmatched": []
 }

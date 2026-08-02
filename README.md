@@ -7,10 +7,12 @@ Node.js CLI app that uses Apryse SDK to:
 3. reapply captured Alt-text onto retagged `Figure` elements
 4. generate a JSON report listing unmatched Alt-text entries
 
+Matching uses same-page rectangle overlap (85% minimum), and very small image rectangles are skipped as likely artifacts.
+
 ## Requirements
 
 - Node.js 18+
-- Apryse license key (recommended)
+- Apryse license key
 
 ## Install
 
