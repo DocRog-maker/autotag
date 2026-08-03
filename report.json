@@ -1,7 +1,7 @@
 {
   "input": "C:\\demo\\autotag\\PDF_UA_label_img.pdf",
   "output": "C:\\demo\\autotag\\output.pdf",
-  "generatedAt": "2026-08-02T20:51:44.831Z",
+  "generatedAt": "2026-08-03T02:46:20.823Z",
   "sourceTagLocationCount": 1,
   "retaggedTagLocationCount": 1,
   "sourceTagLocations": [
@@ -11,9 +11,6 @@
       "path": "0/4",
       "pageIndex": 1,
       "pageNumber": 1,
-      "mcids": [
-        27
-      ],
       "rect": {
         "x1": 329.95,
         "y1": 453.46,
@@ -31,9 +28,6 @@
       "path": "0/0/4",
       "pageIndex": 1,
       "pageNumber": 1,
-      "mcids": [
-        22
-      ],
       "rect": {
         "x1": 329.95,
         "y1": 453.46,
@@ -57,12 +51,6 @@
       "targetPath": "0/0/4",
       "pageIndex": 1,
       "pageNumber": 1,
-      "sourceMcids": [
-        27
-      ],
-      "targetMcids": [
-        22
-      ],
       "sourceRect": {
         "x1": 329.95,
         "y1": 453.46,

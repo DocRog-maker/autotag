@@ -3,7 +3,9 @@ const path = require('path');
 const os = require('os');
 const { PDFNet } = require('@pdftron/pdfnet-node');
 
+// Accept small position/size differences between original and retagged image tags.
 const MIN_MATCH_OVERLAP_RATIO = 0.85;
+// Ignore tiny image tags that are usually artifacts/decorative fragments.
 const MIN_IMAGE_RECT_AREA = 64;
 
 function isImageTagType(type) {
@@ -61,8 +63,8 @@ async function ensureReadableFile(filePath) {
   }
 }
 
-async function collectAltCandidateElements(doc, options) {
-  const { onlyWithAltText, includeFigureWithoutAlt } = options;
+async function collectTagCandidates(doc, options) {
+  const { onlyWithAltText, includeImageTags } = options;
   const stree = await doc.getStructTree();
   const elements = [];
 
@@ -73,32 +75,7 @@ async function collectAltCandidateElements(doc, options) {
   async function getContentItemLocation(contentItem) {
     const page = await contentItem.getPage();
     const pageIndex = page ? await page.getIndex() : null;
-    const contentType = await contentItem.getType();
-    const isMarkedContent =
-      contentType === PDFNet.ContentItem.Type.e_MCR || contentType === PDFNet.ContentItem.Type.e_MCID;
-    const mcid = isMarkedContent ? await contentItem.getMCID() : null;
-
-    return {
-      pageIndex,
-      mcid,
-      contentType,
-    };
-  }
-
-  function dedupeNumbers(values) {
-    const seen = new Set();
-    const out = [];
-    for (const value of values) {
-      if (value === null || value === undefined) {
-        continue;
-      }
-      const key = String(value);
-      if (!seen.has(key)) {
-        seen.add(key);
-        out.push(value);
-      }
-    }
-    return out;
+    return { pageIndex };
   }
 
   async function readRectArray(rectObj) {
@@ -166,7 +143,6 @@ async function collectAltCandidateElements(doc, options) {
 
   async function walkElement(elem, pathSegments) {
     let firstPageIndex = null;
-    const mcids = [];
     const numKids = await elem.getNumKids();
 
     for (let i = 0; i < numKids; i += 1) {
@@ -176,16 +152,12 @@ async function collectAltCandidateElements(doc, options) {
         if (firstPageIndex === null) {
           firstPageIndex = contentLocation.pageIndex;
         }
-        if (contentLocation.mcid !== null) {
-          mcids.push(contentLocation.mcid);
-        }
       } else {
         const child = await elem.getAsStructElem(i);
-        const childLocation = await walkElement(child, [...pathSegments, i]);
-        if (firstPageIndex === null && childLocation.firstPageIndex !== null) {
-          firstPageIndex = childLocation.firstPageIndex;
+        const childFirstPageIndex = await walkElement(child, [...pathSegments, i]);
+        if (firstPageIndex === null && childFirstPageIndex !== null) {
+          firstPageIndex = childFirstPageIndex;
         }
-        mcids.push(...childLocation.mcids);
       }
     }
 
@@ -194,10 +166,10 @@ async function collectAltCandidateElements(doc, options) {
     const altText = hasAlt ? await elem.getAlt() : '';
     const hasNonEmptyAltText = hasAlt && altText.trim().length > 0;
     const isImageTag = isImageTagType(type);
-    const includeByFigureType = includeFigureWithoutAlt && isImageTag;
+    const includeByType = includeImageTags && isImageTag;
     const includeByAltText = onlyWithAltText ? hasNonEmptyAltText : hasAlt;
 
-    if (includeByFigureType || includeByAltText) {
+    if (includeByType || includeByAltText) {
       const sdfObj = await elem.getSDFObj();
       const objNum = await sdfObj.getObjNum();
       elements.push({
@@ -207,7 +179,6 @@ async function collectAltCandidateElements(doc, options) {
         objNum,
         pageIndex: firstPageIndex,
         pageNumber: firstPageIndex && firstPageIndex > 0 ? firstPageIndex : null,
-        mcids: dedupeNumbers(mcids),
         rect: await getElementRectFromSdfObj(sdfObj),
         hasAlt,
         altText,
@@ -215,10 +186,7 @@ async function collectAltCandidateElements(doc, options) {
       });
     }
 
-    return {
-      firstPageIndex,
-      mcids: dedupeNumbers(mcids),
-    };
+    return firstPageIndex;
   }
 
   const rootKids = await stree.getNumKids();
@@ -230,14 +198,14 @@ async function collectAltCandidateElements(doc, options) {
   return elements;
 }
 
-function groupByPageInOrder(figures) {
+function groupByPageInOrder(tags) {
   const grouped = new Map();
-  for (const figure of figures) {
-    const key = String(figure.pageIndex === null ? 'unresolved' : figure.pageIndex);
+  for (const tag of tags) {
+    const key = String(tag.pageIndex === null ? 'unresolved' : tag.pageIndex);
     if (!grouped.has(key)) {
       grouped.set(key, []);
     }
-    grouped.get(key).push(figure);
+    grouped.get(key).push(tag);
   }
   return grouped;
 }
@@ -295,9 +263,9 @@ function getRectSimilarityScore(rectA, rectB) {
   return overlapArea / Math.max(areaA, areaB);
 }
 
-async function applyAltTextMappings(sourceFigures, retaggedFigures) {
-  const sourceByPage = groupByPageInOrder(sourceFigures);
-  const targetByPage = groupByPageInOrder(retaggedFigures);
+async function applyAltTextMappings(sourceTagsWithAlt, retaggedImageTags) {
+  const sourceByPage = groupByPageInOrder(sourceTagsWithAlt);
+  const targetByPage = groupByPageInOrder(retaggedImageTags);
   const unmatched = [];
   const applied = [];
   const skippedArtifacts = [];
@@ -306,24 +274,23 @@ async function applyAltTextMappings(sourceFigures, retaggedFigures) {
 
   for (const [pageKey, sourceList] of sourceByPage.entries()) {
     const targetList = targetByPage.get(pageKey) || [];
-    for (const sourceFigure of sourceList) {
-      const sourceArea = rectArea(sourceFigure.rect);
+    for (const sourceTag of sourceList) {
+      const sourceArea = rectArea(sourceTag.rect);
       if (sourceArea > 0 && sourceArea < MIN_IMAGE_RECT_AREA) {
         skippedArtifacts.push({
-          sourceType: sourceFigure.type,
-          sourcePath: sourceFigure.path,
-          sourceObjNum: sourceFigure.objNum,
-          pageIndex: sourceFigure.pageIndex,
-          pageNumber: sourceFigure.pageNumber,
-          sourceMcids: sourceFigure.mcids,
-          sourceRect: sourceFigure.rect,
-          altText: sourceFigure.altText,
+          sourceType: sourceTag.type,
+          sourcePath: sourceTag.path,
+          sourceObjNum: sourceTag.objNum,
+          pageIndex: sourceTag.pageIndex,
+          pageNumber: sourceTag.pageNumber,
+          sourceRect: sourceTag.rect,
+          altText: sourceTag.altText,
           reason: `Skipped as likely artifact: area ${sourceArea.toFixed(2)} < ${MIN_IMAGE_RECT_AREA}.`,
         });
         continue;
       }
 
-      let targetFigure = null;
+      let targetTag = null;
       let matchMethod = 'none';
       let overlapRatio = null;
 
@@ -333,72 +300,69 @@ async function applyAltTextMappings(sourceFigures, retaggedFigures) {
           (rectArea(candidate.rect) <= 0 || rectArea(candidate.rect) >= MIN_IMAGE_RECT_AREA)
       );
 
-      if (sourceFigure.rect) {
+      if (sourceTag.rect) {
         let bestMatch = null;
         let bestScore = 0;
         for (const candidate of candidateTargets) {
           if (!candidate.rect) {
             continue;
           }
-          const score = getRectSimilarityScore(sourceFigure.rect, candidate.rect);
+          const score = getRectSimilarityScore(sourceTag.rect, candidate.rect);
           if (score > bestScore) {
             bestScore = score;
             bestMatch = candidate;
           }
         }
         if (bestMatch && bestScore >= MIN_MATCH_OVERLAP_RATIO) {
-          targetFigure = bestMatch;
+          targetTag = bestMatch;
           matchMethod = 'rect-overlap';
           overlapRatio = bestScore;
         }
       }
 
-      if (!targetFigure && !sourceFigure.rect) {
-        targetFigure = candidateTargets[0] || null;
-        if (targetFigure) {
+      if (!targetTag && !sourceTag.rect) {
+        targetTag = candidateTargets[0] || null;
+        if (targetTag) {
           matchMethod = 'order-fallback-no-source-rect';
         }
       }
 
-      if (!targetFigure) {
+      if (!targetTag) {
         unmatched.push({
-          sourceType: sourceFigure.type,
-          sourcePath: sourceFigure.path,
-          sourceObjNum: sourceFigure.objNum,
-          pageIndex: sourceFigure.pageIndex,
-          pageNumber: sourceFigure.pageNumber,
-          sourceMcids: sourceFigure.mcids,
-          sourceRect: sourceFigure.rect,
-          altText: sourceFigure.altText,
+          sourceType: sourceTag.type,
+          sourcePath: sourceTag.path,
+          sourceObjNum: sourceTag.objNum,
+          pageIndex: sourceTag.pageIndex,
+          pageNumber: sourceTag.pageNumber,
+          sourceRect: sourceTag.rect,
+          altText: sourceTag.altText,
           reason:
-            sourceFigure.rect
-              ? `No retagged Figure met location overlap threshold (${Math.round(
+            sourceTag.rect
+              ? `No retagged image tag met location overlap threshold (${Math.round(
                   MIN_MATCH_OVERLAP_RATIO * 100
                 )}%).`
-              : 'No corresponding retagged Figure available for fallback matching.',
+              : 'No corresponding retagged image tag available for fallback matching.',
         });
         continue;
       }
 
-      usedTargetObjNums.add(targetFigure.objNum);
+      usedTargetObjNums.add(targetTag.objNum);
 
-      const targetObj = await targetFigure.element.getSDFObj();
-      await targetObj.putText('Alt', sourceFigure.altText);
+      const targetObj = await targetTag.element.getSDFObj();
+      await targetObj.putText('Alt', sourceTag.altText);
 
       applied.push({
-        sourceObjNum: sourceFigure.objNum,
-        sourcePath: sourceFigure.path,
-        targetObjNum: targetFigure.objNum,
-        targetPath: targetFigure.path,
-        pageIndex: sourceFigure.pageIndex,
-        pageNumber: sourceFigure.pageNumber,
-        sourceMcids: sourceFigure.mcids,
-        targetMcids: targetFigure.mcids,
-        sourceRect: sourceFigure.rect,
-        targetRect: targetFigure.rect,
+        sourceObjNum: sourceTag.objNum,
+        sourcePath: sourceTag.path,
+        targetObjNum: targetTag.objNum,
+        targetPath: targetTag.path,
+        pageIndex: sourceTag.pageIndex,
+        pageNumber: sourceTag.pageNumber,
+        sourceRect: sourceTag.rect,
+        targetRect: targetTag.rect,
         matchMethod,
         overlapRatio,
-        altText: sourceFigure.altText,
+        altText: sourceTag.altText,
       });
     }
   }
@@ -413,7 +377,6 @@ function toTagLocationLogEntry(tag) {
     path: tag.path,
     pageIndex: tag.pageIndex,
     pageNumber: tag.pageNumber,
-    mcids: tag.mcids,
     rect: tag.rect,
     hasAlt: tag.hasAlt,
     altText: tag.altText,
@@ -429,10 +392,11 @@ function logTagLocations(label, tags) {
     const pageLabel = tag.pageNumber === null ? 'unknown-page' : `page ${tag.pageNumber}`;
     const altSummary = tag.hasNonEmptyAltText ? `"${tag.altText}"` : '[no alt text]';
     console.log(
-      `  - ${tag.type} obj=${tag.objNum} ${pageLabel} path=${tag.path} mcids=${JSON.stringify(
-        tag.mcids
-      )} rect=${JSON.stringify(tag.rect)} alt=${altSummary}`
+      `  - ${tag.type} obj=${tag.objNum} ${pageLabel} path=${tag.path} rect=${JSON.stringify(
+        tag.rect
+      )} alt=${altSummary}`
     );
+    console.log(`    Alt: ${tag.hasNonEmptyAltText ? tag.altText : '[no alt text]'}`);
   }
 }
 
@@ -452,6 +416,12 @@ async function run() {
   const outputPath = path.resolve(args.output);
   const reportPath = path.resolve(args.report || `${outputPath}.alt-text-report.json`);
 
+  if (inputPath === outputPath) {
+    throw new Error(
+      'Input and output path are the same. That would overwrite the source file, so stopping.'
+    );
+  }
+
   await ensureReadableFile(inputPath);
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.mkdir(path.dirname(reportPath), { recursive: true });
@@ -467,32 +437,32 @@ async function run() {
 
     const sourceDoc = await PDFNet.PDFDoc.createFromFilePath(inputPath);
     await sourceDoc.initSecurityHandler();
-    const sourceAltCandidates = await collectAltCandidateElements(sourceDoc, {
+    const sourceTagCandidates = await collectTagCandidates(sourceDoc, {
       onlyWithAltText: false,
-      includeFigureWithoutAlt: true,
+      includeImageTags: true,
     });
-    const sourceFiguresWithAlt = sourceAltCandidates.filter(
+    const sourceImageTagsWithAlt = sourceTagCandidates.filter(
       (tag) => isImageTagType(tag.type) && tag.hasNonEmptyAltText
     );
 
-    logTagLocations('Original document tag locations (Figure or has Alt)', sourceAltCandidates);
+    logTagLocations('Original document tag locations (image tag or has Alt)', sourceTagCandidates);
 
     const pdfUaConformance = await PDFNet.PDFUAConformance.create();
     await pdfUaConformance.autoConvert(inputPath, tempOutputPath);
 
     const retaggedDoc = await PDFNet.PDFDoc.createFromFilePath(tempOutputPath);
     await retaggedDoc.initSecurityHandler();
-    const retaggedAltCandidates = await collectAltCandidateElements(retaggedDoc, {
+    const retaggedTagCandidates = await collectTagCandidates(retaggedDoc, {
       onlyWithAltText: false,
-      includeFigureWithoutAlt: true,
+      includeImageTags: true,
     });
-    const retaggedFigureElements = retaggedAltCandidates.filter((tag) => isImageTagType(tag.type));
+    const retaggedImageTags = retaggedTagCandidates.filter((tag) => isImageTagType(tag.type));
 
-    logTagLocations('Retagged document tag locations (Figure or has Alt)', retaggedAltCandidates);
+    logTagLocations('Retagged document tag locations (image tag or has Alt)', retaggedTagCandidates);
 
     const { unmatched, applied, skippedArtifacts } = await applyAltTextMappings(
-      sourceFiguresWithAlt,
-      retaggedFigureElements
+      sourceImageTagsWithAlt,
+      retaggedImageTags
     );
 
     await retaggedDoc.save(outputPath, 0);
@@ -501,12 +471,12 @@ async function run() {
       input: inputPath,
       output: outputPath,
       generatedAt: new Date().toISOString(),
-      sourceTagLocationCount: sourceAltCandidates.length,
-      retaggedTagLocationCount: retaggedAltCandidates.length,
-      sourceTagLocations: sourceAltCandidates.map(toTagLocationLogEntry),
-      retaggedTagLocations: retaggedAltCandidates.map(toTagLocationLogEntry),
-      sourceFigureAltTextCount: sourceFiguresWithAlt.length,
-      retaggedFigureCount: retaggedFigureElements.length,
+      sourceTagLocationCount: sourceTagCandidates.length,
+      retaggedTagLocationCount: retaggedTagCandidates.length,
+      sourceTagLocations: sourceTagCandidates.map(toTagLocationLogEntry),
+      retaggedTagLocations: retaggedTagCandidates.map(toTagLocationLogEntry),
+      sourceFigureAltTextCount: sourceImageTagsWithAlt.length,
+      retaggedFigureCount: retaggedImageTags.length,
       reappliedCount: applied.length,
       unmatchedCount: unmatched.length,
       skippedArtifactCount: skippedArtifacts.length,
@@ -527,9 +497,13 @@ async function run() {
   } finally {
     try {
       await fs.rm(tempOutputPath, { force: true });
-      PDFNet.shutdown();
     } catch (cleanupErr) {
       console.error(`Warning: could not delete temp file ${tempOutputPath}: ${cleanupErr.message}`);
+    }
+    try {
+      PDFNet.shutdown();
+    } catch (shutdownErr) {
+      console.error(`Unable to shutdown ${shutdownErr.message}`);
     }
   }
 }
