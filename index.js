@@ -17,7 +17,7 @@ function parseArgs(argv) {
     input: null,
     output: null,
     report: null,
-    licenseKey: process.env.APRYSE_LICENSE_KEY || null,
+    licenseKey: process.env.APRYSE_FULL_KEY || null,
   };
 
   for (let i = 2; i < argv.length; i += 1) {
@@ -175,7 +175,6 @@ async function collectTagCandidates(doc, options) {
       elements.push({
         element: elem,
         type,
-        path: pathSegments.join('/'),
         objNum,
         pageIndex: firstPageIndex,
         pageNumber: firstPageIndex && firstPageIndex > 0 ? firstPageIndex : null,
@@ -279,7 +278,6 @@ async function applyAltTextMappings(sourceTagsWithAlt, retaggedImageTags) {
       if (sourceArea > 0 && sourceArea < MIN_IMAGE_RECT_AREA) {
         skippedArtifacts.push({
           sourceType: sourceTag.type,
-          sourcePath: sourceTag.path,
           sourceObjNum: sourceTag.objNum,
           pageIndex: sourceTag.pageIndex,
           pageNumber: sourceTag.pageNumber,
@@ -330,7 +328,6 @@ async function applyAltTextMappings(sourceTagsWithAlt, retaggedImageTags) {
       if (!targetTag) {
         unmatched.push({
           sourceType: sourceTag.type,
-          sourcePath: sourceTag.path,
           sourceObjNum: sourceTag.objNum,
           pageIndex: sourceTag.pageIndex,
           pageNumber: sourceTag.pageNumber,
@@ -353,9 +350,7 @@ async function applyAltTextMappings(sourceTagsWithAlt, retaggedImageTags) {
 
       applied.push({
         sourceObjNum: sourceTag.objNum,
-        sourcePath: sourceTag.path,
         targetObjNum: targetTag.objNum,
-        targetPath: targetTag.path,
         pageIndex: sourceTag.pageIndex,
         pageNumber: sourceTag.pageNumber,
         sourceRect: sourceTag.rect,
@@ -374,7 +369,6 @@ function toTagLocationLogEntry(tag) {
   return {
     type: tag.type,
     objNum: tag.objNum,
-    path: tag.path,
     pageIndex: tag.pageIndex,
     pageNumber: tag.pageNumber,
     rect: tag.rect,
@@ -392,9 +386,7 @@ function logTagLocations(label, tags) {
     const pageLabel = tag.pageNumber === null ? 'unknown-page' : `page ${tag.pageNumber}`;
     const altSummary = tag.hasNonEmptyAltText ? `"${tag.altText}"` : '[no alt text]';
     console.log(
-      `  - ${tag.type} obj=${tag.objNum} ${pageLabel} path=${tag.path} rect=${JSON.stringify(
-        tag.rect
-      )} alt=${altSummary}`
+      `  - ${tag.type} obj=${tag.objNum} ${pageLabel} rect=${JSON.stringify(tag.rect)} alt=${altSummary}`
     );
     console.log(`    Alt: ${tag.hasNonEmptyAltText ? tag.altText : '[no alt text]'}`);
   }
